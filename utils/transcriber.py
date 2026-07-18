@@ -17,50 +17,69 @@ from typing import List, Optional
 from utils.srt_writer import Segment
 
 
+import sys
+
 # ---------------------------------------------------------------------------
 # Model registry
 # ---------------------------------------------------------------------------
 
 # MLX-compatible model IDs hosted on Hugging Face (mlx-community namespace).
 # These are quantized Apple MLX builds that run natively on M-series GPUs.
-#
-# "arabic-v3" points to the locally-converted Byne/whisper-large-v3-arabic
-# model (stored in ./models/whisper-large-v3-arabic-mlx after running
-# convert_arabic_model.py). We resolve the absolute path at runtime.
-MODELS = {
+MODELS_MLX = {
     "large-v3":       "mlx-community/whisper-large-v3-mlx",
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "arabic-v3":      "__local__",   # resolved at runtime — see get_model_path()
+    "arabic-v3":      "__local__",   # resolved at runtime
+}
+
+# Faster-Whisper model IDs (either HF repos or local paths).
+MODELS_FASTER_WHISPER = {
+    "large-v3":       "large-v3",
+    "large-v3-turbo": "large-v3-turbo",
+    "arabic-v3":      "__local__",   # resolved at runtime
 }
 
 # Absolute path to the locally-converted Arabic fine-tuned model
-_ARABIC_LOCAL_MODEL = (
+_ARABIC_LOCAL_MODEL_MLX = (
     Path(__file__).parent.parent / "models" / "whisper-large-v3-arabic-mlx"
+)
+_ARABIC_LOCAL_MODEL_CT2 = (
+    Path(__file__).parent.parent / "models" / "whisper-large-v3-arabic-ct2"
 )
 
 
 def get_model_path(model_key: str) -> str:
     """
     Resolve a model key to a HuggingFace repo ID or a local path string.
-
-    For 'arabic-v3', returns the local converted model directory.
-    Raises RuntimeError if the local model hasn't been converted yet.
     """
-    if model_key == "arabic-v3":
-        if not (_ARABIC_LOCAL_MODEL / "weights.safetensors").exists():
-            raise RuntimeError(
-                "Arabic fine-tuned model not found.\n"
-                "Run the converter first:\n"
-                "  source .venv/bin/activate\n"
-                "  python3 convert_arabic_model.py"
-            )
-        return str(_ARABIC_LOCAL_MODEL)
-    return MODELS[model_key]
+    if sys.platform == "darwin":
+        if model_key == "arabic-v3":
+            if not (_ARABIC_LOCAL_MODEL_MLX / "weights.safetensors").exists():
+                raise RuntimeError(
+                    "Arabic fine-tuned model not found.\n"
+                    "Run the converter first:\n"
+                    "  source .venv/bin/activate\n"
+                    "  python3 convert_arabic_model.py"
+                )
+            return str(_ARABIC_LOCAL_MODEL_MLX)
+        return MODELS_MLX[model_key]
+    else:
+        if model_key == "arabic-v3":
+            if not (_ARABIC_LOCAL_MODEL_CT2 / "model.bin").exists():
+                raise RuntimeError(
+                    "Arabic fine-tuned model not found in CTranslate2 format.\n"
+                    "Run the converter first:\n"
+                    "  python3 convert_arabic_model.py"
+                )
+            return str(_ARABIC_LOCAL_MODEL_CT2)
+        return MODELS_FASTER_WHISPER[model_key]
 
 
 def is_arabic_model_ready() -> bool:
     """Return True if the locally-converted Arabic model is available."""
-    return (_ARABIC_LOCAL_MODEL / "weights.safetensors").exists()
+    if sys.platform == "darwin":
+        return (_ARABIC_LOCAL_MODEL_MLX / "weights.safetensors").exists()
+    else:
+        return (_ARABIC_LOCAL_MODEL_CT2 / "model.bin").exists()
 
 
 # Language codes used by Whisper (ISO 639-1)
@@ -135,15 +154,16 @@ class Transcriber:
 
     def __init__(self, model_key: str = "large-v3", language: str = "english") -> None:
         """
-        Initialize and load the MLX-Whisper model.
+        Initialize and load the model based on platform.
 
         Args:
             model_key: One of 'large-v3' or 'large-v3-turbo'.
             language:  'english' or 'arabic'.
         """
-        if model_key not in MODELS:
+        valid_keys = MODELS_MLX if sys.platform == "darwin" else MODELS_FASTER_WHISPER
+        if model_key not in valid_keys:
             raise ValueError(
-                f"Unknown model '{model_key}'. Choose from: {list(MODELS.keys())}"
+                f"Unknown model '{model_key}'. Choose from: {list(valid_keys.keys())}"
             )
         if language.lower() not in LANGUAGE_CODES:
             raise ValueError(
@@ -152,21 +172,32 @@ class Transcriber:
 
         self.model_id = get_model_path(model_key)
         self.language_code = LANGUAGE_CODES[language.lower()]
-        self._mlx_whisper = None  # Lazy import after user sees the loading message
+        self._engine = None  # Lazy import after user sees the loading message
 
     def load(self) -> None:
         """
-        Import mlx_whisper and pre-warm the model.
+        Import the respective engine (mlx-whisper or faster-whisper) and pre-warm the model.
         Called explicitly so the caller can show a loading indicator first.
         """
-        try:
-            import mlx_whisper  # type: ignore[import]
-            self._mlx_whisper = mlx_whisper
-        except ImportError:
-            raise RuntimeError(
-                "mlx-whisper is not installed.\n"
-                "Install it with: pip install mlx-whisper"
-            )
+        if sys.platform == "darwin":
+            try:
+                import mlx_whisper  # type: ignore[import]
+                self._engine = mlx_whisper
+            except ImportError:
+                raise RuntimeError(
+                    "mlx-whisper is not installed.\n"
+                    "Install it with: pip install mlx-whisper"
+                )
+        else:
+            try:
+                from faster_whisper import WhisperModel
+                # Colab instances typically have Nvidia GPUs, we use FP16 for speed
+                self._engine = WhisperModel(self.model_id, device="cuda", compute_type="float16")
+            except ImportError:
+                raise RuntimeError(
+                    "faster-whisper is not installed.\n"
+                    "Install it with: pip install faster-whisper ctranslate2"
+                )
 
     def transcribe(
         self,
@@ -191,7 +222,7 @@ class Transcriber:
         Raises:
             RuntimeError: If model is not loaded or audio extraction fails.
         """
-        if self._mlx_whisper is None:
+        if self._engine is None:
             raise RuntimeError("Model not loaded. Call Transcriber.load() first.")
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -201,26 +232,38 @@ class Transcriber:
             # Step 1: Extract audio
             extract_audio(video_path, tmp_path)
 
-            # Step 2: Transcribe with MLX-Whisper
-            #
-            # Key parameters explained:
-            #   language              — Explicit language prevents misdetection
-            #   word_timestamps       — Enables per-word timing for precise subtitles
-            #   condition_on_previous_text — Uses prior context to improve accuracy
-            #   temperature           — 0.0 = greedy/deterministic, no sampling noise
-            #   no_speech_threshold   — Segments below this confidence are skipped (anti-hallucination)
-            #   compression_ratio_threshold — Detects repetitive/looping output and discards it
-            result = self._mlx_whisper.transcribe(
-                tmp_path,
-                path_or_hf_repo=self.model_id,
-                language=self.language_code,
-                word_timestamps=True,
-                condition_on_previous_text=True,
-                temperature=0.0,
-                no_speech_threshold=0.6,
-                compression_ratio_threshold=2.4,
-                verbose=False,
-            )
+            # Step 2: Transcribe with selected engine
+            raw_segments = []
+
+            if sys.platform == "darwin":
+                result = self._engine.transcribe(
+                    tmp_path,
+                    path_or_hf_repo=self.model_id,
+                    language=self.language_code,
+                    word_timestamps=True,
+                    condition_on_previous_text=True,
+                    temperature=0.0,
+                    no_speech_threshold=0.6,
+                    compression_ratio_threshold=2.4,
+                    verbose=False,
+                )
+                raw_segments = result.get("segments", [])
+            else:
+                segments_iter, _ = self._engine.transcribe(
+                    tmp_path,
+                    language=self.language_code,
+                    word_timestamps=True,
+                    condition_on_previous_text=True,
+                    temperature=0.0,
+                    no_speech_threshold=0.6,
+                    compression_ratio_threshold=2.4,
+                )
+                for seg in segments_iter:
+                    raw_segments.append({
+                        "text": seg.text,
+                        "start": seg.start,
+                        "end": seg.end,
+                    })
 
         finally:
             # Always clean up the temp audio file
@@ -229,9 +272,8 @@ class Transcriber:
             except OSError:
                 pass
 
-        # Step 3: Convert mlx-whisper output to our Segment format
+        # Step 3: Convert raw segment dictionaries to our Segment format
         segments: List[Segment] = []
-        raw_segments = result.get("segments", [])
 
         for seg in raw_segments:
             text = seg.get("text", "").strip()

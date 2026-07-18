@@ -244,42 +244,45 @@ def verify_model(output_dir: Path):
 
 
 def main():
-    console.print("\n[bold cyan]━━━ Whisper Arabic → MLX Converter ━━━[/]")
-    console.print(f"  Source : [bold]{HF_REPO}[/]")
-    console.print(f"  Output : [bold]{OUTPUT_DIR}[/]\n")
+    import subprocess
+    
+    if sys.platform == "darwin":
+        console.print("\n[bold cyan]━━━ Whisper Arabic → MLX Converter ━━━[/]")
+        console.print(f"  Source : [bold]{HF_REPO}[/]")
+        console.print(f"  Output : [bold]{OUTPUT_DIR}[/]\n")
 
-    # 1. Check deps
-    console.print("[bold]Step 1/5[/] Checking dependencies…")
-    check_dependencies()
+        # 1. Check deps
+        console.print("[bold]Step 1/5[/] Checking dependencies…")
+        check_dependencies()
 
-    # 2. Check if already converted
-    if (OUTPUT_DIR / "weights.safetensors").exists():
-        console.print(f"\n[yellow]⚠  Model already converted at {OUTPUT_DIR}[/]")
-        console.print("  Delete the folder and re-run to reconvert.")
-        console.print("\n[green]✓ Nothing to do — model is ready![/]")
-        return
+        # 2. Check if already converted
+        if (OUTPUT_DIR / "weights.safetensors").exists():
+            console.print(f"\n[yellow]⚠  Model already converted at {OUTPUT_DIR}[/]")
+            console.print("  Delete the folder and re-run to reconvert.")
+            console.print("\n[green]✓ Nothing to do — model is ready![/]")
+            return
 
-    # 3. Download
-    console.print("\n[bold]Step 2/5[/] Downloading from HuggingFace…")
-    model_path = download_model()
+        # 3. Download
+        console.print("\n[bold]Step 2/5[/] Downloading from HuggingFace…")
+        model_path = download_model()
 
-    # 4. Load PyTorch weights
-    console.print("\n[bold]Step 3/5[/] Loading PyTorch weights…")
-    pt_weights = load_pytorch_weights(model_path)
-    console.print(f"  [green]✓[/] Loaded {len(pt_weights)} weight tensors")
+        # 4. Load PyTorch weights
+        console.print("\n[bold]Step 3/5[/] Loading PyTorch weights…")
+        pt_weights = load_pytorch_weights(model_path)
+        console.print(f"  [green]✓[/] Loaded {len(pt_weights)} weight tensors")
 
-    # 5. Convert to MLX
-    console.print("\n[bold]Step 4/5[/] Converting PyTorch → MLX format…")
-    mlx_weights = convert_weights(pt_weights)
+        # 5. Convert to MLX
+        console.print("\n[bold]Step 4/5[/] Converting PyTorch → MLX format…")
+        mlx_weights = convert_weights(pt_weights)
 
-    # 6. Save
-    console.print("\n[bold]Step 5/5[/] Saving MLX model…")
-    save_mlx_model(mlx_weights, OUTPUT_DIR)
+        # 6. Save
+        console.print("\n[bold]Step 5/5[/] Saving MLX model…")
+        save_mlx_model(mlx_weights, OUTPUT_DIR)
 
-    # 7. Verify
-    verify_model(OUTPUT_DIR)
+        # 7. Verify
+        verify_model(OUTPUT_DIR)
 
-    console.print(f"""
+        console.print(f"""
 [bold green]━━━ Conversion Complete! ━━━[/]
 
   Model saved to: [bold]{OUTPUT_DIR.resolve()}[/]
@@ -288,6 +291,28 @@ def main():
     [cyan]python3 transcribe.py[/]
   Then select [bold]Arabic Fine-tuned[/] in the speed mode menu.
 """)
+    else:
+        CT2_OUTPUT = Path("models/whisper-large-v3-arabic-ct2")
+        console.print("\n[bold cyan]━━━ Whisper Arabic → CTranslate2 Converter ━━━[/]")
+        console.print(f"  Source : [bold]{HF_REPO}[/]")
+        console.print(f"  Output : [bold]{CT2_OUTPUT}[/]\n")
+        
+        if (CT2_OUTPUT / "model.bin").exists():
+            console.print(f"\n[yellow]⚠  Model already converted at {CT2_OUTPUT}[/]")
+            return
+            
+        console.print("\n[bold]Step 1/1[/] Running ct2-transformers-converter…")
+        try:
+            subprocess.run([
+                "ct2-transformers-converter", 
+                "--model", HF_REPO,
+                "--output_dir", str(CT2_OUTPUT),
+                "--copy_files", "tokenizer.json", "preprocessor_config.json",
+                "--quantization", "float16"
+            ], check=True)
+            console.print(f"\n[bold green]━━━ Conversion Complete! ━━━[/]")
+        except Exception as e:
+            console.print(f"\n[bold red]✗ Conversion failed: {e}[/]")
 
 
 if __name__ == "__main__":

@@ -664,6 +664,9 @@ def _apply_speed_mode(mode: dict) -> Optional[subprocess.Popen]:
 
     Returns the caffeinate Popen handle (so caller can kill it on exit), or None.
     """
+    if sys.platform != "darwin":
+        return None
+
     # Environment variables must be set BEFORE mlx is imported.
     os.environ["MLX_GPU_MEMORY_LIMIT"] = mode["gpu_mem_limit"]
     if mode["mps_fallback"]:
@@ -752,11 +755,14 @@ def main() -> None:
 
     console.print(Rule("[secondary]Applying Optimisations[/]"))
     console.print()
-    console.print(
-        f"  [dim]MLX GPU memory limit → [bold]{int(float(speed_mode['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
-    )
-    if speed_mode["mps_fallback"]:
-        console.print("  [dim]MPS fallback        → enabled[/]")
+    if sys.platform == "darwin":
+        console.print(
+            f"  [dim]MLX GPU memory limit → [bold]{int(float(speed_mode['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
+        )
+        if speed_mode["mps_fallback"]:
+            console.print("  [dim]MPS fallback        → enabled[/]")
+    else:
+        console.print("  [dim]Using CUDA acceleration (faster-whisper)[/]")
 
     caffeinate_proc = _apply_speed_mode(speed_mode)
     console.print()

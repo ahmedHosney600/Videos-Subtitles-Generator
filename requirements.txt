@@ -1,14 +1,17 @@
 # Video → Subtitles — Python Dependencies
 # Install with: pip install -r requirements.txt
 #
-# IMPORTANT: Also install ffmpeg via Homebrew before running:
-#   brew install ffmpeg
+# IMPORTANT: Also install ffmpeg before running:
+#   Mac: brew install ffmpeg
+#   Linux/Colab: apt-get install ffmpeg
 
-# Core transcription engine — Apple MLX optimized Whisper (uses M1 GPU natively)
-mlx-whisper
+# Core transcription engines (OS dependent)
+mlx-whisper ; sys_platform == 'darwin'
+faster-whisper ; sys_platform == 'linux'
+ctranslate2 ; sys_platform == 'linux'
 
-# Audio/video processing — extracts audio tracks from any video container
+# Audio/video processing
 ffmpeg-python
 
-# Rich terminal UI — progress bars, panels, and colored output
+# Rich terminal UI
 rich
