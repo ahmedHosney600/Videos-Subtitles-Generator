@@ -456,7 +456,11 @@ def process_videos(
     overall_progress = make_overall_progress()
     video_progress = make_video_progress()
 
-    with Live(Group(overall_progress, video_progress), console=console):
+    # In Colab/non-interactive environments, terminal cursor movement isn't supported,
+    # so every refresh prints a new block. Lower the refresh rate to avoid log spam.
+    refresh_rate = 4 if console.is_terminal else 0.2
+
+    with Live(Group(overall_progress, video_progress), console=console, refresh_per_second=refresh_rate):
         overall_task = overall_progress.add_task(
             "Transcribing videos", total=len(videos)
         )
