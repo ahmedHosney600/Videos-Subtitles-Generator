@@ -93,7 +93,7 @@ LANGUAGE_CODES = {
 # Audio extraction
 # ---------------------------------------------------------------------------
 
-def extract_audio(video_path: Path, output_wav: str) -> None:
+def extract_audio(video_path: Path, output_wav: str) -> bool:
     """
     Extract the audio track from a video file and write it as a
     16 kHz mono WAV file — the exact format Whisper expects.
@@ -103,6 +103,9 @@ def extract_audio(video_path: Path, output_wav: str) -> None:
     Args:
         video_path:  Path to the source video file.
         output_wav:  Destination path for the extracted WAV file.
+        
+    Returns:
+        True if audio was extracted successfully, False if the video has no audio.
 
     Raises:
         RuntimeError: If ffmpeg is not installed or extraction fails.
@@ -131,9 +134,12 @@ def extract_audio(video_path: Path, output_wav: str) -> None:
             "ffmpeg not found. Install it with: brew install ffmpeg"
         )
     except subprocess.CalledProcessError as e:
+        if "does not contain any stream" in e.stderr:
+            return False
         raise RuntimeError(
             f"ffmpeg failed to extract audio from '{video_path.name}':\n{e.stderr}"
         )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +236,10 @@ class Transcriber:
 
         try:
             # Step 1: Extract audio
-            extract_audio(video_path, tmp_path)
+            has_audio = extract_audio(video_path, tmp_path)
+            
+            if not has_audio:
+                return []
 
             # Step 2: Transcribe with selected engine
             raw_segments = []
