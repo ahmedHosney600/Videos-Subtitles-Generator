@@ -28,7 +28,8 @@ from typing import Dict, List, Optional
 
 from rich import box
 from rich.columns import Columns
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -455,7 +456,7 @@ def process_videos(
     overall_progress = make_overall_progress()
     video_progress = make_video_progress()
 
-    with overall_progress, video_progress:
+    with Live(Group(overall_progress, video_progress), console=console):
         overall_task = overall_progress.add_task(
             "Transcribing videos", total=len(videos)
         )
