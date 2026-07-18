@@ -256,11 +256,19 @@ def main():
         check_dependencies()
 
         # 2. Check if already converted
-        if (OUTPUT_DIR / "weights.safetensors").exists():
-            console.print(f"\n[yellow]⚠  Model already converted at {OUTPUT_DIR}[/]")
-            console.print("  Delete the folder and re-run to reconvert.")
-            console.print("\n[green]✓ Nothing to do — model is ready![/]")
-            return
+        mlx_weights = OUTPUT_DIR / "weights.safetensors"
+        if mlx_weights.exists():
+            import os
+            size_mb = os.path.getsize(mlx_weights) / (1024 * 1024)
+            if size_mb > 1000:
+                console.print(f"\n[yellow]⚠  Model already converted at {OUTPUT_DIR}[/]")
+                console.print("  Delete the folder and re-run to reconvert.")
+                console.print("\n[green]✓ Nothing to do — model is ready![/]")
+                return
+            else:
+                console.print(f"\n[yellow]⚠  Found incomplete model file ({size_mb:.1f} MB). Resuming conversion...[/]")
+                import shutil
+                shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
         # 3. Download
         console.print("\n[bold]Step 2/5[/] Downloading from HuggingFace…")
@@ -297,9 +305,17 @@ def main():
         console.print(f"  Source : [bold]{HF_REPO}[/]")
         console.print(f"  Output : [bold]{CT2_OUTPUT}[/]\n")
         
-        if (CT2_OUTPUT / "model.bin").exists():
-            console.print(f"\n[yellow]⚠  Model already converted at {CT2_OUTPUT}[/]")
-            return
+        ct2_model = CT2_OUTPUT / "model.bin"
+        if ct2_model.exists():
+            import os
+            size_mb = os.path.getsize(ct2_model) / (1024 * 1024)
+            if size_mb > 1000:
+                console.print(f"\n[yellow]⚠  Model already converted at {CT2_OUTPUT}[/]")
+                return
+            else:
+                console.print(f"\n[yellow]⚠  Found incomplete model file ({size_mb:.1f} MB). Resuming conversion...[/]")
+                import shutil
+                shutil.rmtree(CT2_OUTPUT, ignore_errors=True)
             
         console.print("\n[bold]Step 1/1[/] Running ct2-transformers-converter…")
         try:
