@@ -48,7 +48,7 @@ from rich.theme import Theme
 
 from utils.scanner import needs_transcription, scan_videos, subtitle_path
 from utils.srt_writer import write_srt
-from utils.transcriber import MODELS, Transcriber, is_arabic_model_ready
+from utils.transcriber import Transcriber, is_arabic_model_ready
 
 # ---------------------------------------------------------------------------
 # Speed mode definitions
