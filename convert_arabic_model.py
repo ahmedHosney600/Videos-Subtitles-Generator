@@ -71,6 +71,7 @@ def download_model():
     local_path = snapshot_download(
         repo_id=HF_REPO,
         ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
+        max_workers=1,  # Prevents overlapping/glitchy tqdm progress bars
     )
     console.print(f"  [green]✓[/] Downloaded to: {local_path}")
     return Path(local_path)
