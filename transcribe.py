@@ -468,14 +468,45 @@ def process_videos(
     skipped = 0
     failed = 0
 
+    if console.is_terminal:
+        # ── Real terminal: use Rich Live progress bars ─────────────────
+        success, skipped, failed = _process_rich(
+            videos, engine, force, log, folder
+        )
+    else:
+        # ── Colab / non-interactive: simple line-per-video output ──────
+        success, skipped, failed = _process_simple(
+            videos, engine, force, log, folder
+        )
+
+    # Write log file
+    if log:
+        log_path = folder / "transcription_log.txt"
+        try:
+            log.write(log_path)
+            console.print(f"\n[info]📋 Log saved to: [file]{log_path}[/][/]")
+        except OSError as e:
+            console.print(f"[warning]⚠  Could not write log file: {e}[/]")
+
+    return success, skipped, failed
+
+
+def _process_rich(
+    videos: List[Path],
+    engine: Transcriber,
+    force: bool,
+    log: Optional[TranscriptionLog],
+    folder: Path,
+) -> tuple[int, int, int]:
+    """Process videos with Rich Live progress bars (real terminal only)."""
+    success = 0
+    skipped = 0
+    failed = 0
+
     overall_progress = make_overall_progress()
     video_progress = make_video_progress()
 
-    # In Colab/non-interactive environments, terminal cursor movement isn't supported,
-    # so every refresh prints a new block. Lower the refresh rate to avoid log spam.
-    refresh_rate = 4 if console.is_terminal else 0.2
-
-    with Live(Group(overall_progress, video_progress), console=console, refresh_per_second=refresh_rate):
+    with Live(Group(overall_progress, video_progress), console=console, refresh_per_second=4):
         overall_task = overall_progress.add_task(
             "Transcribing videos", total=len(videos)
         )
@@ -484,7 +515,6 @@ def process_videos(
             video_name = video.name
             srt_out = subtitle_path(video)
 
-            # Skip if already done (unless --force)
             if not force and not needs_transcription(video):
                 overall_progress.update(
                     overall_task,
@@ -496,19 +526,16 @@ def process_videos(
                     log.record(video, "skipped")
                 continue
 
-            # Update the overall bar description
             overall_progress.update(
                 overall_task,
                 description=f"{video_name}",
             )
 
-            # Start per-video spinner
             vid_task = video_progress.add_task(
                 f"Extracting & transcribing audio…", total=None
             )
 
             t_start = time.monotonic()
-            error_msg: Optional[str] = None
 
             try:
                 segments = engine.transcribe(video)
@@ -527,32 +554,73 @@ def process_videos(
 
             except Exception as exc:
                 duration = time.monotonic() - t_start
-                error_msg = str(exc)
                 failed += 1
 
                 video_progress.update(
                     vid_task,
-                    description=f"[error]Failed[/] {video_name}: {error_msg[:60]}",
+                    description=f"[error]Failed[/] {video_name}: {str(exc)[:60]}",
                 )
 
                 if log:
-                    log.record(video, "failed", duration_s=duration, error=error_msg)
+                    log.record(video, "failed", duration_s=duration, error=str(exc))
 
-                # Print full traceback for debugging
                 console.print_exception(max_frames=5)
 
             finally:
                 video_progress.stop_task(vid_task)
                 overall_progress.advance(overall_task)
 
-    # Write log file
-    if log:
-        log_path = folder / "transcription_log.txt"
+    return success, skipped, failed
+
+
+def _process_simple(
+    videos: List[Path],
+    engine: Transcriber,
+    force: bool,
+    log: Optional[TranscriptionLog],
+    folder: Path,
+) -> tuple[int, int, int]:
+    """Process videos with simple print output (Colab / non-interactive)."""
+    success = 0
+    skipped = 0
+    failed = 0
+    total = len(videos)
+
+    for i, video in enumerate(videos, 1):
+        video_name = video.name
+        srt_out = subtitle_path(video)
+
+        if not force and not needs_transcription(video):
+            print(f"  ⏭  [{i}/{total}] Skipped: {video_name}")
+            skipped += 1
+            if log:
+                log.record(video, "skipped")
+            continue
+
+        print(f"  🎬 [{i}/{total}] Transcribing: {video_name} ...", flush=True)
+
+        t_start = time.monotonic()
+
         try:
-            log.write(log_path)
-            console.print(f"\n[info]📋 Log saved to: [file]{log_path}[/][/]")
-        except OSError as e:
-            console.print(f"[warning]⚠  Could not write log file: {e}[/]")
+            segments = engine.transcribe(video)
+            write_srt(segments, srt_out)
+            duration = time.monotonic() - t_start
+            success += 1
+
+            print(f"  ✓  [{i}/{total}] Done → {srt_out.name}  "
+                  f"({len(segments)} segments, {duration:.1f}s)")
+
+            if log:
+                log.record(video, "success", duration_s=duration)
+
+        except Exception as exc:
+            duration = time.monotonic() - t_start
+            failed += 1
+
+            print(f"  ✗  [{i}/{total}] Failed: {video_name}: {exc}")
+
+            if log:
+                log.record(video, "failed", duration_s=duration, error=str(exc))
 
     return success, skipped, failed
 
