@@ -78,19 +78,27 @@ def download_model():
 
 
 def load_pytorch_weights(model_path: Path) -> dict:
-    """Load weights from PyTorch checkpoint or safetensors."""
+    """Load weights from PyTorch checkpoint or safetensors (supports sharded models)."""
     import torch
 
-    # Try safetensors first (preferred)
-    st_files = list(model_path.glob("model.safetensors")) + \
-               list(model_path.glob("*.safetensors"))
+    # Collect safetensors files (handle both single-file and sharded models)
+    # Use a set to deduplicate in case "model.safetensors" matches both patterns
+    st_files = sorted(set(
+        list(model_path.glob("model.safetensors")) +
+        list(model_path.glob("model-*.safetensors"))
+    ))
     pt_files = list(model_path.glob("pytorch_model.bin")) + \
                list(model_path.glob("model.bin"))
 
     if st_files:
-        console.print(f"  [dim]Loading safetensors: {st_files[0].name}[/]")
         from safetensors.torch import load_file
-        return load_file(st_files[0])
+        all_weights = {}
+        for sf in st_files:
+            console.print(f"  [dim]Loading safetensors: {sf.name}[/]")
+            shard = load_file(sf)
+            all_weights.update(shard)
+        console.print(f"  [dim]Merged {len(st_files)} shard(s) → {len(all_weights)} total tensors[/]")
+        return all_weights
     elif pt_files:
         console.print(f"  [dim]Loading PyTorch bin: {pt_files[0].name}[/]")
         return torch.load(pt_files[0], map_location="cpu", weights_only=True)
@@ -111,7 +119,9 @@ HF_TO_MLX_KEY_MAP = {
     "model.encoder.conv1.bias":                "encoder.conv1.bias",
     "model.encoder.conv2.weight":              "encoder.conv2.weight",
     "model.encoder.conv2.bias":                "encoder.conv2.bias",
-    "model.encoder.embed_positions.weight":    "encoder.positional_embedding",
+    # Encoder positional embedding is sinusoidal in mlx-whisper (computed at
+    # runtime, not a trainable parameter) — skip it.
+    "model.encoder.embed_positions.weight":    None,
     # Decoder
     "model.decoder.embed_tokens.weight":       "decoder.token_embedding.weight",
     "model.decoder.embed_positions.weight":    "decoder.positional_embedding",
@@ -120,20 +130,16 @@ HF_TO_MLX_KEY_MAP = {
     "model.encoder.layer_norm.bias":           "encoder.ln_post.bias",
     "model.decoder.layer_norm.weight":         "decoder.ln.weight",
     "model.decoder.layer_norm.bias":           "decoder.ln.bias",
-    # proj_out (logits)
-    "proj_out.weight":                         "decoder.token_embedding.weight",  # tied
+    # proj_out (logits) — weight-tied with token embedding, skip
+    "proj_out.weight":                         None,
 }
 
 
 def remap_key(key: str) -> str | None:
     """Map a HuggingFace Whisper key to an MLX Whisper key. Returns None to skip."""
-    # Direct map
+    # Direct map (may return None for keys that should be skipped)
     if key in HF_TO_MLX_KEY_MAP:
         return HF_TO_MLX_KEY_MAP[key]
-
-    # Skip proj_out (weight-tied with token embedding)
-    if key == "proj_out.weight":
-        return None
 
     # Encoder layers: model.encoder.layers.N.XXX → encoder.blocks.N.XXX
     if key.startswith("model.encoder.layers."):
@@ -171,8 +177,8 @@ def remap_layer_key(rest: str, prefix: str) -> str:
         "encoder_attn.v_proj":    "cross_attn.value",
         "encoder_attn.out_proj":  "cross_attn.out",
         "encoder_attn_layer_norm":"cross_attn_ln",
-        "fc1":                    "mlp.0",
-        "fc2":                    "mlp.2",
+        "fc1":                    "mlp1",
+        "fc2":                    "mlp2",
         "final_layer_norm":       "mlp_ln",
         "self_attn.k_proj":       "attn.key",
     }
@@ -201,9 +207,17 @@ def convert_weights(pt_weights: dict) -> dict:
             skipped.append(pt_key)
             continue
 
-        # Convert: PyTorch tensor → numpy → MLX array
+        # Convert: PyTorch tensor → numpy (via float32) → MLX array (float16)
+        # float16 matches mlx-whisper's default fp16 mode and halves model size.
         np_array = pt_tensor.float().numpy()
-        mlx_weights[mlx_key] = mx.array(np_array)
+
+        # Conv1d weights need axis transposition:
+        # PyTorch: (out_channels, in_channels, kernel_size)
+        # MLX:     (out_channels, kernel_size, in_channels)
+        if "conv1.weight" in mlx_key or "conv2.weight" in mlx_key:
+            np_array = np_array.transpose(0, 2, 1)
+
+        mlx_weights[mlx_key] = mx.array(np_array).astype(mx.float16)
 
     if skipped:
         console.print(f"  [dim]Skipped {len(skipped)} weight-tied keys (normal)[/]")

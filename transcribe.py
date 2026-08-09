@@ -52,54 +52,31 @@ from utils.srt_writer import write_srt
 from utils.transcriber import Transcriber, is_arabic_model_ready
 
 # ---------------------------------------------------------------------------
-# Speed mode definitions
-# Each mode bundles: model, GPU memory limit, MPS fallback, caffeinate flag
+# Model registry
+# Each entry describes the model only — optimisations are configured separately.
 # ---------------------------------------------------------------------------
 
-SPEED_MODES: Dict[str, dict] = {
-    "quality": {
-        "label":           "Quality",
-        "model":           "large-v3",
-        "gpu_mem_limit":   "0.75",
-        "mps_fallback":    False,
-        "caffeinate":      False,
-        "description":     "Highest accuracy · Large-v3 · 75% GPU memory",
-        "speed_icon":      "⚡⚡",
-        "quality_icon":    "★★★★★",
-        "arabic_only":     False,
+MODELS: Dict[str, dict] = {
+    "large-v3": {
+        "label":        "Large V3",
+        "description":  "Highest accuracy · Best for clear speech",
+        "speed_icon":   "⚡⚡",
+        "quality_icon": "★★★★★",
+        "arabic_only":  False,
     },
-    "balanced": {
-        "label":           "Balanced",
-        "model":           "large-v3-turbo",
-        "gpu_mem_limit":   "0.75",
-        "mps_fallback":    True,
-        "caffeinate":      False,
-        "description":     "~2× faster · Turbo model · 75% GPU memory · MPS fallback",
-        "speed_icon":      "⚡⚡⚡",
-        "quality_icon":    "★★★★½",
-        "arabic_only":     False,
+    "large-v3-turbo": {
+        "label":        "Large V3 Turbo",
+        "description":  "~2× faster · Slightly lower accuracy",
+        "speed_icon":   "⚡⚡⚡⚡",
+        "quality_icon": "★★★★½",
+        "arabic_only":  False,
     },
-    "fast": {
-        "label":           "Fast",
-        "model":           "large-v3-turbo",
-        "gpu_mem_limit":   "0.75",
-        "mps_fallback":    True,
-        "caffeinate":      True,
-        "description":     "Maximum speed · Turbo · 75% GPU memory · MPS · no throttle",
-        "speed_icon":      "⚡⚡⚡⚡",
-        "quality_icon":    "★★★★½",
-        "arabic_only":     False,
-    },
-    "arabic-fine-tuned": {
-        "label":           "Arabic Fine-tuned",
-        "model":           "arabic-v3",
-        "gpu_mem_limit":   "0.75",
-        "mps_fallback":    True,
-        "caffeinate":      False,
-        "description":     "Fine-tuned on Arabic · Best for dialects · Byne/whisper-large-v3-arabic",
-        "speed_icon":      "⚡⚡",
-        "quality_icon":    "★★★★★",
-        "arabic_only":     True,    # Only makes sense for Arabic language
+    "arabic-v3": {
+        "label":        "🇸🇦 Arabic Fine-tuned",
+        "description":  "Fine-tuned for Arabic dialects · Byne/whisper-large-v3-arabic",
+        "speed_icon":   "⚡⚡",
+        "quality_icon": "★★★★★",
+        "arabic_only":  True,
     },
 }
 
@@ -207,81 +184,118 @@ def prompt_language() -> str:
         return language
 
 
-def prompt_speed_mode() -> dict:
-    """Ask user to choose a speed mode that bundles model + all optimisations."""
-    console.print(Rule("[secondary]Step 3 — Speed Mode[/]"))
+def prompt_model(language: str) -> str:
+    """Ask user to choose a Whisper model. Returns the model key."""
+    console.print(Rule("[secondary]Step 3 — Model[/]"))
     console.print()
 
     arabic_ready = is_arabic_model_ready()
+    is_arabic = language.lower() == "arabic"
 
     table = Table(box=box.ROUNDED, border_style="dim cyan", padding=(0, 2))
     table.add_column("#",        style="bold cyan",  width=3,  justify="center")
-    table.add_column("Mode",     style="bold white", width=20)
+    table.add_column("Model",    style="bold white", width=24)
     table.add_column("Speed",    style="yellow",     width=8,  justify="center")
     table.add_column("Accuracy", style="green",      width=10, justify="center")
-    table.add_column("Model",    style="cyan",       width=22)
-    table.add_column("Optimisations applied", style="dim")
+    table.add_column("Description", style="dim")
 
-    # Build list of available modes (arabic-fine-tuned only shown if converted)
-    mode_keys = [
-        k for k in SPEED_MODES
-        if k != "arabic-fine-tuned" or arabic_ready
+    # Build list of available models
+    # arabic-v3 only shown when language is Arabic AND the model is converted
+    model_keys = [
+        k for k in MODELS
+        if not MODELS[k].get("arabic_only") or (is_arabic and arabic_ready)
     ]
 
-    for i, key in enumerate(mode_keys, start=1):
-        m = SPEED_MODES[key]
-        opts = []
-        opts.append(f"GPU mem {int(float(m['gpu_mem_limit'])*100)}%")
-        if m["mps_fallback"]:
-            opts.append("MPS fallback")
-        if m["caffeinate"]:
-            opts.append("caffeinate (no throttle)")
-
-        label = m["label"]
-        if key == "arabic-fine-tuned":
-            label = "🇸🇦 " + label   # Saudi flag for visual distinction
-
+    for i, key in enumerate(model_keys, start=1):
+        m = MODELS[key]
         table.add_row(
             str(i),
-            label,
+            m["label"],
             m["speed_icon"],
             m["quality_icon"],
-            m["model"],
-            " · ".join(opts),
+            m["description"],
         )
 
     console.print(table)
 
-    # Show a hint if the Arabic model isn't converted yet
-    if not arabic_ready:
+    # Show a hint if the Arabic model isn't converted yet (only relevant for Arabic)
+    if is_arabic and not arabic_ready:
         console.print(
             "  [dim]💡 Tip: run [bold]python3 convert_arabic_model.py[/] to unlock"
-            " the [bold]Arabic Fine-tuned[/] mode (best for dialects)[/]"
+            " the [bold]🇸🇦 Arabic Fine-tuned[/] model (best for dialects)[/]"
         )
 
     console.print()
 
     choice = Prompt.ask(
-        "[primary]⚡ Select speed mode[/]",
-        choices=[str(i) for i in range(1, len(mode_keys) + 1)],
+        "[primary]🤖 Select model[/]",
+        choices=[str(i) for i in range(1, len(model_keys) + 1)],
         default="1",
         console=console,
     )
-    selected_key = mode_keys[int(choice) - 1]
-    mode = SPEED_MODES[selected_key]
+    selected_key = model_keys[int(choice) - 1]
+    model_info = MODELS[selected_key]
 
     console.print(
-        f"  [success]✓[/] Mode: [accent]{mode['label']}[/]  "
-        f"[dim]({mode['description']})[/]"
+        f"  [success]✓[/] Model: [accent]{model_info['label']}[/]  "
+        f"[dim]({model_info['description']})[/]"
     )
     console.print()
-    return mode
+    return selected_key
+
+
+def prompt_optimisations() -> dict:
+    """Ask user to configure GPU memory and caffeinate settings. Returns config dict."""
+    console.print(Rule("[secondary]Step 4 — Optimisations[/]"))
+    console.print()
+
+    # --- GPU memory % ---
+    while True:
+        raw = Prompt.ask(
+            "[primary]🎛  GPU memory limit %[/] [dim](25–100)[/]",
+            default="75",
+            console=console,
+        ).strip()
+        try:
+            gpu_pct = int(raw)
+            if 25 <= gpu_pct <= 100:
+                break
+            console.print("  [error]Must be between 25 and 100.[/]")
+        except ValueError:
+            console.print("  [error]Enter a number (e.g. 75).[/]")
+
+    gpu_mem_limit = str(gpu_pct / 100)
+    console.print(f"  [success]✓[/] GPU memory: [accent]{gpu_pct}%[/]")
+    console.print()
+
+    # --- Caffeinate ---
+    if sys.platform == "darwin":
+        caf_choice = Prompt.ask(
+            "[primary]☕ Enable caffeinate?[/] [dim](prevents thermal throttling)[/]",
+            choices=["y", "n"],
+            default="y",
+            console=console,
+        )
+        caffeinate = caf_choice.lower() == "y"
+        status = "[accent]enabled[/]" if caffeinate else "[dim]disabled[/]"
+        console.print(f"  [success]✓[/] Caffeinate: {status}")
+    else:
+        caffeinate = False
+
+    console.print()
+
+    return {
+        "gpu_mem_limit": gpu_mem_limit,
+        "mps_fallback":  True,   # Always enabled on macOS
+        "caffeinate":    caffeinate,
+    }
 
 
 def confirm_start(
     folder: Path,
     language: str,
-    speed_mode: dict,
+    model_key: str,
+    config: dict,
     total_videos: int,
     to_process: int,
     skipped_existing: int,
@@ -290,20 +304,21 @@ def confirm_start(
     console.print(Rule("[secondary]Summary — Ready to Start[/]"))
     console.print()
 
+    model_info = MODELS[model_key]
+
     grid = Table.grid(padding=(0, 3))
     grid.add_column(style="dim", min_width=22)
     grid.add_column(style="white")
 
-    opts = [f"GPU {int(float(speed_mode['gpu_mem_limit'])*100)}% memory"]
-    if speed_mode["mps_fallback"]:
+    opts = [f"GPU {int(float(config['gpu_mem_limit'])*100)}% memory"]
+    if config["mps_fallback"]:
         opts.append("MPS fallback")
-    if speed_mode["caffeinate"]:
+    if config["caffeinate"]:
         opts.append("caffeinate")
 
     grid.add_row("📁 Folder",        str(folder))
     grid.add_row("🌐 Language",      language.title())
-    grid.add_row("⚡ Speed Mode",    f"{speed_mode['label']}  {speed_mode['speed_icon']}")
-    grid.add_row("🤖 Model",         speed_mode["model"])
+    grid.add_row("🤖 Model",         f"{model_info['label']}  {model_info['speed_icon']}")
     grid.add_row("🔧 Optimisations", " · ".join(opts))
     grid.add_row("🎬 Videos found",  str(total_videos))
     grid.add_row("🔄 To transcribe", f"[bold]{to_process}[/]")
@@ -646,11 +661,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Video language (skips the interactive language prompt).",
     )
     parser.add_argument(
-        "--mode",
+        "--model",
         type=str,
-        choices=list(SPEED_MODES.keys()),
+        choices=list(MODELS.keys()),
         default=None,
-        help="Speed mode: quality | balanced | fast  (skips interactive prompt).",
+        help="Whisper model: large-v3 | large-v3-turbo | arabic-v3",
+    )
+    parser.add_argument(
+        "--gpu-mem",
+        type=int,
+        default=None,
+        help="GPU memory limit percentage (25–100, default: 75).",
+    )
+    parser.add_argument(
+        "--caffeinate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable caffeinate (--caffeinate or --no-caffeinate).",
     )
     return parser
 
@@ -659,11 +686,11 @@ def build_parser() -> argparse.ArgumentParser:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _apply_speed_mode(mode: dict) -> Optional[subprocess.Popen]:
+def _apply_optimisations(config: dict) -> Optional[subprocess.Popen]:
     """
-    Apply OS-level optimisations for the chosen speed mode.
+    Apply OS-level optimisations from the config dict.
 
-    - Sets MLX_GPU_MEMORY_LIMIT so MLX can use more of the 32 GB unified pool.
+    - Sets MLX_GPU_MEMORY_LIMIT so MLX can use more of the unified memory pool.
     - Sets PYTORCH_ENABLE_MPS_FALLBACK to keep ops on-chip.
     - Optionally starts `caffeinate` to prevent macOS from throttling the process.
 
@@ -673,12 +700,12 @@ def _apply_speed_mode(mode: dict) -> Optional[subprocess.Popen]:
         return None
 
     # Environment variables must be set BEFORE mlx is imported.
-    os.environ["MLX_GPU_MEMORY_LIMIT"] = mode["gpu_mem_limit"]
-    if mode["mps_fallback"]:
+    os.environ["MLX_GPU_MEMORY_LIMIT"] = config["gpu_mem_limit"]
+    if config["mps_fallback"]:
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
     caffeinate_proc: Optional[subprocess.Popen] = None
-    if mode["caffeinate"]:
+    if config["caffeinate"]:
         try:
             # -i = prevent idle sleep, -s = prevent system sleep
             caffeinate_proc = subprocess.Popen(
@@ -710,8 +737,41 @@ def main() -> None:
     )
 
     language: str = args.language if args.language else prompt_language()
-    speed_mode: dict = SPEED_MODES[args.mode] if args.mode else prompt_speed_mode()
-    model_key: str = speed_mode["model"]
+
+    # ── Model selection ────────────────────────────────────────────────────
+
+    # Validate CLI: reject arabic-only models when language isn't Arabic
+    if args.model and MODELS.get(args.model, {}).get("arabic_only") and language != "arabic":
+        console.print(
+            f"[error]✗  Model '{args.model}' is only available for Arabic language.[/]\n"
+            f"  [dim]Selected language: {language.title()}[/]"
+        )
+        sys.exit(1)
+
+    model_key: str = args.model if args.model else prompt_model(language)
+
+    # ── Optimisation settings ──────────────────────────────────────────────
+
+    if args.gpu_mem is not None or args.caffeinate is not None:
+        # CLI mode: build config from args with defaults
+        gpu_pct = args.gpu_mem if args.gpu_mem is not None else 75
+        if not (25 <= gpu_pct <= 100):
+            console.print("[error]✗  --gpu-mem must be between 25 and 100.[/]")
+            sys.exit(1)
+        config = {
+            "gpu_mem_limit": str(gpu_pct / 100),
+            "mps_fallback":  True,
+            "caffeinate":    args.caffeinate if args.caffeinate is not None else True,
+        }
+    elif args.model:
+        # Model was given via CLI but no optimisation flags → use defaults
+        config = {
+            "gpu_mem_limit": "0.75",
+            "mps_fallback":  True,
+            "caffeinate":    True,
+        }
+    else:
+        config = prompt_optimisations()
 
     # ── Scan for videos ─────────────────────────────────────────────────────
 
@@ -750,26 +810,27 @@ def main() -> None:
     # ── Confirm ─────────────────────────────────────────────────────────────
 
     if not confirm_start(
-        folder, language, speed_mode, len(all_videos), len(to_process), skipped_existing
+        folder, language, model_key, config,
+        len(all_videos), len(to_process), skipped_existing,
     ):
         console.print("[dim]Exiting.[/]")
         sys.exit(0)
 
-    # ── Apply speed-mode OS optimisations ───────────────────────────────────
+    # ── Apply OS optimisations ─────────────────────────────────────────────
     #    Must happen before engine.load() so env vars are visible to MLX.
 
     console.print(Rule("[secondary]Applying Optimisations[/]"))
     console.print()
     if sys.platform == "darwin":
         console.print(
-            f"  [dim]MLX GPU memory limit → [bold]{int(float(speed_mode['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
+            f"  [dim]MLX GPU memory limit → [bold]{int(float(config['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
         )
-        if speed_mode["mps_fallback"]:
+        if config["mps_fallback"]:
             console.print("  [dim]MPS fallback        → enabled[/]")
     else:
         console.print("  [dim]Using CUDA acceleration (faster-whisper)[/]")
 
-    caffeinate_proc = _apply_speed_mode(speed_mode)
+    caffeinate_proc = _apply_optimisations(config)
     console.print()
 
     # ── Load model ──────────────────────────────────────────────────────────
