@@ -26,6 +26,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+
+def _is_colab() -> bool:
+    """Return True when running inside Google Colab."""
+    return "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG") is not None
+
+
+# Suppress noisy tqdm / huggingface_hub download bars EARLY so that the
+# env-var is visible before any library reads it.  In Colab the bars can't
+# do in-place updates and produce hundreds of output lines.
+if _is_colab() or not sys.stdout.isatty():
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
 from rich import box
 from rich.columns import Columns
 from rich.console import Console, Group
@@ -846,12 +859,20 @@ def main() -> None:
     console.print(Rule("[secondary]Scanning for videos…[/]"))
     console.print()
 
-    with console.status("[cyan]Scanning directory tree…[/]", spinner="dots"):
+    if _is_colab():
+        print("  Scanning directory tree…", flush=True)
         try:
             all_videos = scan_videos(folder)
         except NotADirectoryError as e:
             console.print(f"[error]✗  {e}[/]")
             sys.exit(1)
+    else:
+        with console.status("[cyan]Scanning directory tree…[/]", spinner="dots"):
+            try:
+                all_videos = scan_videos(folder)
+            except NotADirectoryError as e:
+                console.print(f"[error]✗  {e}[/]")
+                sys.exit(1)
 
     if not all_videos:
         console.print(
@@ -908,18 +929,28 @@ def main() -> None:
 
     engine = Transcriber(model_key=model_key, language=language)
 
-    with console.status(
-        f"[cyan]Downloading & loading [bold]{model_key}[/] model "
-        f"(first run may take a minute)…[/]",
-        spinner="dots12",
-    ):
+    if _is_colab():
+        print(f"  Downloading & loading {model_key} model (first run may take a minute)…", flush=True)
         try:
             engine.load()
         except RuntimeError as e:
-            console.print(f"\n[error]✗  {e}[/]")
+            print(f"\n✗  {e}")
             if caffeinate_proc:
                 caffeinate_proc.terminate()
             sys.exit(1)
+    else:
+        with console.status(
+            f"[cyan]Downloading & loading [bold]{model_key}[/] model "
+            f"(first run may take a minute)…[/]",
+            spinner="dots12",
+        ):
+            try:
+                engine.load()
+            except RuntimeError as e:
+                console.print(f"\n[error]✗  {e}[/]")
+                if caffeinate_proc:
+                    caffeinate_proc.terminate()
+                sys.exit(1)
 
     console.print(f"  [success]✓[/] Model ready: [accent]{model_key}[/]")
     console.print()
