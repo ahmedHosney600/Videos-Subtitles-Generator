@@ -27,17 +27,25 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-def _is_colab() -> bool:
-    """Return True when running inside Google Colab."""
-    return "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG") is not None
+# Module-level flag — set to True when --mode colab is used.
+# Checked throughout to disable Rich Live / spinners / interactive prompts.
+COLAB_MODE = False
 
 
-# Suppress noisy tqdm / huggingface_hub download bars EARLY so that the
-# env-var is visible before any library reads it.  In Colab the bars can't
-# do in-place updates and produce hundreds of output lines.
-if _is_colab() or not sys.stdout.isatty():
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    os.environ.setdefault("TQDM_DISABLE", "1")
+def _enable_colab_mode() -> None:
+    """Activate Colab-friendly output: suppress progress bars & spinners."""
+    global COLAB_MODE
+    COLAB_MODE = True
+    # Suppress tqdm / huggingface_hub download bars that can't do in-place
+    # updates inside Colab and produce hundreds of output lines.
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["TQDM_DISABLE"] = "1"
+
+
+# Auto-enable if we detect Colab even before arg parsing (safety net for
+# cases where the script is imported rather than invoked via CLI).
+if "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG"):
+    _enable_colab_mode()
 
 from rich import box
 from rich.columns import Columns
@@ -314,10 +322,28 @@ def confirm_start(
     skipped_existing: int,
 ) -> bool:
     """Show a configuration summary and ask user to confirm."""
+    model_info = MODELS[model_key]
+
+    if COLAB_MODE:
+        # ── Colab: compact summary, auto-confirm ──────────────────────
+        print("\n── Summary ──────────────────────────────────")
+        print(f"  📁 Folder       : {folder}")
+        print(f"  🌐 Language     : {language.title()}")
+        print(f"  🤖 Model        : {model_info['label']}")
+        print(f"  🎬 Videos found : {total_videos}")
+        print(f"  🔄 To transcribe: {to_process}")
+        if skipped_existing > 0:
+            print(f"  ⏭  Already done : {skipped_existing}")
+        print("─────────────────────────────────────────────\n")
+
+        if to_process == 0:
+            print("⚠  All videos already have subtitle files. Use --force to re-transcribe.")
+            return False
+        return True  # auto-confirm in Colab
+
+    # ── Terminal: Rich panel + interactive confirm ─────────────────────
     console.print(Rule("[secondary]Summary — Ready to Start[/]"))
     console.print()
-
-    model_info = MODELS[model_key]
 
     grid = Table.grid(padding=(0, 3))
     grid.add_column(style="dim", min_width=22)
@@ -481,13 +507,18 @@ def process_videos(
     skipped = 0
     failed = 0
 
-    if console.is_terminal:
+    if COLAB_MODE:
+        # ── Colab mode: minimal, clean, one-line-per-video output ─────
+        success, skipped, failed = _process_simple(
+            videos, engine, force, log, folder
+        )
+    elif console.is_terminal:
         # ── Real terminal: use Rich Live progress bars ─────────────────
         success, skipped, failed = _process_rich(
             videos, engine, force, log, folder
         )
     else:
-        # ── Colab / non-interactive: simple line-per-video output ──────
+        # ── Piped / non-interactive: also use simple output ────────────
         success, skipped, failed = _process_simple(
             videos, engine, force, log, folder
         )
@@ -497,9 +528,12 @@ def process_videos(
         log_path = folder / "transcription_log.txt"
         try:
             log.write(log_path)
-            console.print(f"\n[info]📋 Log saved to: [file]{log_path}[/][/]")
+            if COLAB_MODE:
+                print(f"\n📋 Log saved to: {log_path}")
+            else:
+                console.print(f"\n[info]📋 Log saved to: [file]{log_path}[/][/]")
         except OSError as e:
-            console.print(f"[warning]⚠  Could not write log file: {e}[/]")
+            print(f"⚠  Could not write log file: {e}")
 
     return success, skipped, failed
 
@@ -644,6 +678,25 @@ def _process_simple(
 
 def print_summary(success: int, skipped: int, failed: int, elapsed: float) -> None:
     """Print a final results summary panel."""
+    mins, secs = divmod(int(elapsed), 60)
+    hours, mins = divmod(mins, 60)
+    time_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours else f"{mins:02d}:{secs:02d}"
+
+    if COLAB_MODE:
+        # ── Colab: clean plain-text summary ────────────────────────────
+        print("\n═══════════════ Transcription Complete ═══════════════")
+        print(f"  ✓ Transcribed : {success}")
+        print(f"  – Skipped     : {skipped}")
+        print(f"  ✗ Failed      : {failed}")
+        print(f"  ⏱  Total time : {time_str}")
+        if failed == 0 and success > 0:
+            print("\n  🎉 All videos transcribed successfully!")
+        elif failed > 0:
+            print(f"\n  ⚠  {failed} video(s) failed. Check errors above or enable --log.")
+        print("════════════════════════════════════════════════════\n")
+        return
+
+    # ── Terminal: Rich panels ──────────────────────────────────────────
     console.print()
     console.print(Rule("[bold cyan]Transcription Complete[/]"))
     console.print()
@@ -677,9 +730,6 @@ def print_summary(success: int, skipped: int, failed: int, elapsed: float) -> No
     console.print(cols, justify="center")
     console.print()
 
-    mins, secs = divmod(int(elapsed), 60)
-    hours, mins = divmod(mins, 60)
-    time_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours else f"{mins:02d}:{secs:02d}"
     console.print(f"[dim]  ⏱  Total time: {time_str}[/]")
     console.print()
 
@@ -760,6 +810,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Enable/disable caffeinate (--caffeinate or --no-caffeinate).",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["live", "colab"],
+        default="live",
+        help=(
+            "Output mode. 'live' uses Rich terminal UI with spinners & "
+            "progress bars (best for Mac terminal). 'colab' uses minimal "
+            "plain-text output optimized for Google Colab (no spinners, "
+            "no progress bars, no interactive prompts)."
+        ),
+    )
     return parser
 
 
@@ -806,6 +868,10 @@ def _apply_optimisations(config: dict) -> Optional[subprocess.Popen]:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    # ── Activate Colab mode BEFORE any output ──────────────────────────────
+    if args.mode == "colab":
+        _enable_colab_mode()
 
     print_banner()
 
@@ -856,17 +922,16 @@ def main() -> None:
 
     # ── Scan for videos ─────────────────────────────────────────────────────
 
-    console.print(Rule("[secondary]Scanning for videos…[/]"))
-    console.print()
-
-    if _is_colab():
+    if COLAB_MODE:
         print("  Scanning directory tree…", flush=True)
         try:
             all_videos = scan_videos(folder)
         except NotADirectoryError as e:
-            console.print(f"[error]✗  {e}[/]")
+            print(f"✗  {e}")
             sys.exit(1)
     else:
+        console.print(Rule("[secondary]Scanning for videos…[/]"))
+        console.print()
         with console.status("[cyan]Scanning directory tree…[/]", spinner="dots"):
             try:
                 all_videos = scan_videos(folder)
@@ -889,12 +954,16 @@ def main() -> None:
     to_process = [v for v in all_videos if args.force or needs_transcription(v)]
     skipped_existing = len(all_videos) - len(to_process)
 
-    console.print(
-        f"  [success]✓[/] Found [bold]{len(all_videos)}[/] video(s) "
-        f"([bold]{len(to_process)}[/] to transcribe, "
-        f"[dim]{skipped_existing} already done[/])"
-    )
-    console.print()
+    if COLAB_MODE:
+        print(f"  ✓ Found {len(all_videos)} video(s) "
+              f"({len(to_process)} to transcribe, {skipped_existing} already done)")
+    else:
+        console.print(
+            f"  [success]✓[/] Found [bold]{len(all_videos)}[/] video(s) "
+            f"([bold]{len(to_process)}[/] to transcribe, "
+            f"[dim]{skipped_existing} already done[/])"
+        )
+        console.print()
 
     # ── Confirm ─────────────────────────────────────────────────────────────
 
@@ -908,29 +977,33 @@ def main() -> None:
     # ── Apply OS optimisations ─────────────────────────────────────────────
     #    Must happen before engine.load() so env vars are visible to MLX.
 
-    console.print(Rule("[secondary]Applying Optimisations[/]"))
-    console.print()
-    if sys.platform == "darwin":
-        console.print(
-            f"  [dim]MLX GPU memory limit → [bold]{int(float(config['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
-        )
-        if config["mps_fallback"]:
-            console.print("  [dim]MPS fallback        → enabled[/]")
+    caffeinate_proc: Optional[subprocess.Popen] = None
+
+    if COLAB_MODE:
+        print("  Using CUDA acceleration (faster-whisper)")
     else:
-        console.print("  [dim]Using CUDA acceleration (faster-whisper)[/]")
+        console.print(Rule("[secondary]Applying Optimisations[/]"))
+        console.print()
+        if sys.platform == "darwin":
+            console.print(
+                f"  [dim]MLX GPU memory limit → [bold]{int(float(config['gpu_mem_limit'])*100)}%[/] of 32 GB[/]"
+            )
+            if config["mps_fallback"]:
+                console.print("  [dim]MPS fallback        → enabled[/]")
+        else:
+            console.print("  [dim]Using CUDA acceleration (faster-whisper)[/]")
 
     caffeinate_proc = _apply_optimisations(config)
-    console.print()
+
+    if not COLAB_MODE:
+        console.print()
 
     # ── Load model ──────────────────────────────────────────────────────────
 
-    console.print(Rule("[secondary]Loading Model[/]"))
-    console.print()
-
     engine = Transcriber(model_key=model_key, language=language)
 
-    if _is_colab():
-        print(f"  Downloading & loading {model_key} model (first run may take a minute)…", flush=True)
+    if COLAB_MODE:
+        print(f"  Loading {model_key} model (first run may take a minute)…", flush=True)
         try:
             engine.load()
         except RuntimeError as e:
@@ -938,7 +1011,10 @@ def main() -> None:
             if caffeinate_proc:
                 caffeinate_proc.terminate()
             sys.exit(1)
+        print(f"  ✓ Model ready: {model_key}")
     else:
+        console.print(Rule("[secondary]Loading Model[/]"))
+        console.print()
         with console.status(
             f"[cyan]Downloading & loading [bold]{model_key}[/] model "
             f"(first run may take a minute)…[/]",
@@ -951,14 +1027,16 @@ def main() -> None:
                 if caffeinate_proc:
                     caffeinate_proc.terminate()
                 sys.exit(1)
-
-    console.print(f"  [success]✓[/] Model ready: [accent]{model_key}[/]")
-    console.print()
+        console.print(f"  [success]✓[/] Model ready: [accent]{model_key}[/]")
+        console.print()
 
     # ── Transcribe ──────────────────────────────────────────────────────────
 
-    console.print(Rule("[secondary]Transcribing[/]"))
-    console.print()
+    if COLAB_MODE:
+        print("\n── Transcribing ─────────────────────────────")
+    else:
+        console.print(Rule("[secondary]Transcribing[/]"))
+        console.print()
 
     wall_start = time.monotonic()
 
